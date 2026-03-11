@@ -101,3 +101,54 @@ def mock_opower_api() -> Generator[AsyncMock]:
         ]
         api.async_get_cost_reads.return_value = []
         yield api
+
+
+@pytest.fixture
+def mock_opower_api_gas_kwh() -> Generator[AsyncMock]:
+    """Mock Opower API with gas account reporting KWH.
+
+    PG&E converts therms to kWh server-side, so the gas forecast
+    comes back with UnitOfMeasure.KWH instead of THERM or CCF.
+    Before the fix, this caused gas sensors to silently not be created.
+    See: https://github.com/home-assistant/core/issues/165028
+    """
+    with patch(
+        "homeassistant.components.opower.coordinator.Opower", autospec=True
+    ) as mock_api:
+        api = mock_api.return_value
+        api.utility = PGE()
+
+        api.async_get_accounts.return_value = [
+            Account(
+                customer=Mock(),
+                uuid="333333-uuid",
+                utility_account_id="333333",
+                id="333333",
+                meter_type=MeterType.GAS,
+                read_resolution=ReadResolution.DAY,
+            ),
+        ]
+        api.async_get_forecast.return_value = [
+            Forecast(
+                account=Account(
+                    customer=Mock(),
+                    uuid="333333-uuid",
+                    utility_account_id="333333",
+                    id="333333",
+                    meter_type=MeterType.GAS,
+                    read_resolution=ReadResolution.DAY,
+                ),
+                usage_to_date=50,
+                cost_to_date=15.0,
+                forecasted_usage=100,
+                forecasted_cost=30.0,
+                typical_usage=90,
+                typical_cost=27.0,
+                unit_of_measure=UnitOfMeasure.KWH,
+                start_date=date(2023, 1, 1),
+                end_date=date(2023, 1, 31),
+                current_date=date(2023, 1, 15),
+            ),
+        ]
+        api.async_get_cost_reads.return_value = []
+        yield api

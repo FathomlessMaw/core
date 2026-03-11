@@ -114,3 +114,69 @@ async def test_sensors(
     state = hass.states.get("sensor.gas_account_222222_last_updated")
     assert state
     assert state.state == "2023-01-02T08:00:00+00:00"
+
+
+async def test_sensors_gas_kwh(
+    recorder_mock: Recorder,
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_opower_api_gas_kwh: AsyncMock,
+) -> None:
+    """Test gas sensors are created when utility reports KWH instead of THERM/CCF.
+
+    PG&E converts therms to kWh server-side, so the Opower API returns
+    UnitOfMeasure.KWH for gas accounts. Before the fix, async_setup_entry
+    only checked for THERM and CCF, causing gas sensor entities to silently
+    not be created.
+
+    See: https://github.com/home-assistant/core/issues/165028
+    """
+    with patch(
+        "homeassistant.components.opower.coordinator.dt_util.utcnow"
+    ) as mock_utcnow:
+        mock_utcnow.return_value = datetime(2023, 1, 2, 8, 0, 0, tzinfo=dt_util.UTC)
+        await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    entity_registry = er.async_get(hass)
+
+    # Gas usage sensor should exist and use kWh (not CCF/m³)
+    entry = entity_registry.async_get(
+        "sensor.gas_account_333333_current_bill_gas_usage_to_date"
+    )
+    assert entry, (
+        "Gas usage sensor was not created for KWH unit — "
+        "GAS_SENSORS_KWH not being selected in async_setup_entry"
+    )
+    assert entry.unique_id == "pge_333333_gas_usage_to_date"
+    state = hass.states.get(
+        "sensor.gas_account_333333_current_bill_gas_usage_to_date"
+    )
+    assert state
+    assert state.attributes.get(ATTR_UNIT_OF_MEASUREMENT) == UnitOfEnergy.KILO_WATT_HOUR
+    assert state.state == "50"
+
+    # Gas cost sensor should also exist
+    entry = entity_registry.async_get(
+        "sensor.gas_account_333333_current_bill_gas_cost_to_date"
+    )
+    assert entry, (
+        "Gas cost sensor was not created for KWH unit — "
+        "GAS_SENSORS_KWH not being selected in async_setup_entry"
+    )
+    assert entry.unique_id == "pge_333333_gas_cost_to_date"
+    state = hass.states.get(
+        "sensor.gas_account_333333_current_bill_gas_cost_to_date"
+    )
+    assert state
+    assert state.attributes.get(ATTR_UNIT_OF_MEASUREMENT) == "USD"
+    assert state.state == "15.0"
+
+    # Common sensors should also exist
+    entry = entity_registry.async_get("sensor.gas_account_333333_last_changed")
+    assert entry
+    assert entry.unique_id == "pge_333333_last_changed"
+
+    entry = entity_registry.async_get("sensor.gas_account_333333_last_updated")
+    assert entry
+    assert entry.unique_id == "pge_333333_last_updated"
