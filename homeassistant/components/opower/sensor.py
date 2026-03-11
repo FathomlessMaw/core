@@ -1,13 +1,10 @@
 """Support for Opower sensors."""
 
 from __future__ import annotations
-
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
-
 from opower import MeterType, UnitOfMeasure
-
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
@@ -20,7 +17,6 @@ from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-
 from .const import DOMAIN
 from .coordinator import OpowerConfigEntry, OpowerCoordinator, OpowerData
 
@@ -50,7 +46,6 @@ COMMON_SENSORS: tuple[OpowerEntityDescription, ...] = (
         value_fn=lambda data: data.last_updated,
     ),
 )
-
 # suggested_display_precision=0 for all sensors since
 # Opower provides 0 decimal points for all these.
 # (for the statistics in the energy dashboard Opower does provide decimal points)
@@ -127,6 +122,7 @@ ELEC_SENSORS: tuple[OpowerEntityDescription, ...] = (
         value_fn=lambda data: data.forecast.end_date if data.forecast else None,
     ),
 )
+# Gas sensors for utilities that report usage in CCF or THERM (standard)
 GAS_SENSORS: tuple[OpowerEntityDescription, ...] = (
     OpowerEntityDescription(
         key="gas_usage_to_date",
@@ -199,6 +195,81 @@ GAS_SENSORS: tuple[OpowerEntityDescription, ...] = (
         value_fn=lambda data: data.forecast.end_date if data.forecast else None,
     ),
 )
+# Gas sensors for utilities that convert therms to kWh server-side (e.g. PG&E).
+# These utilities return UnitOfMeasure.KWH for gas accounts, so we need a
+# separate descriptor tuple with KILO_WATT_HOUR as the native unit.
+GAS_SENSORS_KWH: tuple[OpowerEntityDescription, ...] = (
+    OpowerEntityDescription(
+        key="gas_usage_to_date",
+        translation_key="gas_usage_to_date",
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        state_class=SensorStateClass.TOTAL,
+        suggested_display_precision=0,
+        value_fn=lambda data: data.forecast.usage_to_date if data.forecast else None,
+    ),
+    OpowerEntityDescription(
+        key="gas_forecasted_usage",
+        translation_key="gas_forecasted_usage",
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        state_class=SensorStateClass.TOTAL,
+        suggested_display_precision=0,
+        value_fn=lambda data: data.forecast.forecasted_usage if data.forecast else None,
+    ),
+    OpowerEntityDescription(
+        key="gas_typical_usage",
+        translation_key="gas_typical_usage",
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        state_class=SensorStateClass.TOTAL,
+        suggested_display_precision=0,
+        value_fn=lambda data: data.forecast.typical_usage if data.forecast else None,
+    ),
+    OpowerEntityDescription(
+        key="gas_cost_to_date",
+        translation_key="gas_cost_to_date",
+        device_class=SensorDeviceClass.MONETARY,
+        native_unit_of_measurement="USD",
+        state_class=SensorStateClass.TOTAL,
+        suggested_display_precision=0,
+        value_fn=lambda data: data.forecast.cost_to_date if data.forecast else None,
+    ),
+    OpowerEntityDescription(
+        key="gas_forecasted_cost",
+        translation_key="gas_forecasted_cost",
+        device_class=SensorDeviceClass.MONETARY,
+        native_unit_of_measurement="USD",
+        state_class=SensorStateClass.TOTAL,
+        suggested_display_precision=0,
+        value_fn=lambda data: data.forecast.forecasted_cost if data.forecast else None,
+    ),
+    OpowerEntityDescription(
+        key="gas_typical_cost",
+        translation_key="gas_typical_cost",
+        device_class=SensorDeviceClass.MONETARY,
+        native_unit_of_measurement="USD",
+        state_class=SensorStateClass.TOTAL,
+        suggested_display_precision=0,
+        value_fn=lambda data: data.forecast.typical_cost if data.forecast else None,
+    ),
+    OpowerEntityDescription(
+        key="gas_start_date",
+        translation_key="gas_start_date",
+        device_class=SensorDeviceClass.DATE,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda data: data.forecast.start_date if data.forecast else None,
+    ),
+    OpowerEntityDescription(
+        key="gas_end_date",
+        translation_key="gas_end_date",
+        device_class=SensorDeviceClass.DATE,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda data: data.forecast.end_date if data.forecast else None,
+    ),
+)
 
 
 async def async_setup_entry(
@@ -207,7 +278,6 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the Opower sensor."""
-
     coordinator = entry.runtime_data
     entities: list[OpowerSensor] = []
     opower_data_list = coordinator.data.values()
@@ -231,12 +301,14 @@ async def async_setup_entry(
             and forecast.unit_of_measure == UnitOfMeasure.KWH
         ):
             sensors += ELEC_SENSORS
-        elif (
-            account.meter_type == MeterType.GAS
-            and forecast is not None
-            and forecast.unit_of_measure in [UnitOfMeasure.THERM, UnitOfMeasure.CCF]
-        ):
-            sensors += GAS_SENSORS
+        elif account.meter_type == MeterType.GAS and forecast is not None:
+            # Some utilities (e.g. PG&E) convert therms to kWh server-side and
+            # return UnitOfMeasure.KWH for gas accounts. Use a separate descriptor
+            # tuple with KILO_WATT_HOUR as the native unit in that case.
+            if forecast.unit_of_measure == UnitOfMeasure.KWH:
+                sensors += GAS_SENSORS_KWH
+            elif forecast.unit_of_measure in [UnitOfMeasure.THERM, UnitOfMeasure.CCF]:
+                sensors += GAS_SENSORS
         entities.extend(
             OpowerSensor(
                 coordinator,
@@ -247,7 +319,6 @@ async def async_setup_entry(
             )
             for sensor in sensors
         )
-
     async_add_entities(entities)
 
 
